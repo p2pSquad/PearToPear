@@ -17,11 +17,11 @@ void run_add(const std::vector<std::filesystem::path>& paths, bool all);
 void run_unstage(const std::vector<std::filesystem::path>& paths, bool all);
 
 void run_update();
-void run_ls();
+void run_ls(bool json_format);
 void run_push();
 
 void run_pull(const std::vector<std::string>& targets);
-void run_status();
+void run_status(bool json_format);
 
 } // namespace pear::cli
 
