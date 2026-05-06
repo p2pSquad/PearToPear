@@ -183,3 +183,33 @@ target_link_libraries(pear PRIVATE
 if(PEAR_DEBUG)
     target_compile_definitions(pear PRIVATE PEAR_DEBUG)
 endif()
+
+if(PEAR_DEBUG)
+    target_compile_definitions(pear PRIVATE PEAR_DEBUG)
+endif()
+
+if(PEAR_BUILD_TESTS)
+    enable_testing()
+
+    add_executable(tests
+        tests/tests.cpp
+    )
+
+    target_include_directories(tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+    )
+
+    target_link_libraries(tests PRIVATE
+        GTest::gtest
+        nlohmann_json::nlohmann_json
+    )
+
+    add_dependencies(tests pear)
+
+    include(GoogleTest)
+
+    gtest_discover_tests(tests
+        EXTRA_ARGS $<TARGET_FILE:pear>
+        DISCOVERY_TIMEOUT 30
+    )
+endif()
