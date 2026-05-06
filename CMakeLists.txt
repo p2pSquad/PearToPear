@@ -8,7 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(PEAR_BUILD_TESTS "Build tests" OFF)
-option(PEAR_DEBUG "Enable debug logs" ON)
+option(PEAR_DEBUG "Enable debug logs" OFF)
 
 include(FetchContent)
 
@@ -28,6 +28,13 @@ if(PEAR_BUILD_TESTS)
 
     FetchContent_MakeAvailable(googletest)
 endif()
+
+FetchContent_Declare(
+    nlohmann_json
+    URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+)
+
+FetchContent_MakeAvailable(nlohmann_json)
 
 find_package(SQLite3 REQUIRED)
 find_package(Protobuf REQUIRED)
@@ -155,6 +162,7 @@ add_executable(pear
     src/pear/cli/sync.cpp
     src/pear/cli/status.cpp
     src/pear/cli/output.cpp
+    src/pear/cli/json_output.cpp
 )
 
 target_include_directories(pear PRIVATE
@@ -165,6 +173,7 @@ target_include_directories(pear PRIVATE
 
 target_link_libraries(pear PRIVATE
     CLI11::CLI11
+    nlohmann_json::nlohmann_json
     pear_fs
     pear_db
     pear_net

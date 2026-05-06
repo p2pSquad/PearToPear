@@ -8,6 +8,7 @@
 
 #include "command_utils.hpp"
 #include "output.hpp"
+#include "json_output.hpp"
 #include "status.hpp"
 #include "sync.hpp"
 
@@ -309,7 +310,10 @@ void run_ls(bool json_format) {
     pear::db::SqliteDatabase database(get_database_path(workspace));
 
     const auto files = database.getAllFiles();
-    if(!json_format) {
+
+    if (json_format) {
+        print_ls_json(files, database);
+    } else {
         print_file_tree(files, database);
     }
 }
@@ -527,7 +531,10 @@ void run_status(bool json_format) {
     pear::db::SqliteDatabase database(get_database_path(workspace));
 
     const StatusInfo status = collect_status_info(workspace, database);
-    if(!json_format) {
+
+    if (json_format) {
+        print_status_json(status);
+    } else {
         print_status_info(status);
     }
 }
