@@ -47,7 +47,9 @@ int main(int argc, char** argv) {
 
     CLI::App* update = app.add_subcommand("update", "Update Pear workspace metadata");
 
+    bool json_ls = false;
     CLI::App* ls = app.add_subcommand("ls", "List files in the Pear workspace");
+    ls->add_flag("--json", json_ls, "Output file list in JSON format");
 
     CLI::App* push = app.add_subcommand("push", "Push staged changes to the Pear workspace");
 
@@ -55,7 +57,9 @@ int main(int argc, char** argv) {
     CLI::App* pull = app.add_subcommand("pull", "Download files from the Pear workspace");
     pull->add_option("targets", targets, "Files to download")->required();
 
+    bool json_status = false;
     CLI::App* status = app.add_subcommand("status", "Show workspace changes");
+    status->add_flag("--json", json_status, "Output status in JSON format");
 
     init->callback([&]() { pear::cli::run_init(workspace_path); });
     deinit->callback([&]() { pear::cli::run_deinit(); });
@@ -79,10 +83,10 @@ int main(int argc, char** argv) {
         pear::cli::run_unstage(unstage_paths, unstage_all);
     });
     update->callback([&](){pear::cli::run_update(); });
-    ls->callback([&](){pear::cli::run_ls(); });
+    ls->callback([&](){pear::cli::run_ls(json_ls); });
     push->callback([&](){pear::cli::run_push(); });
     pull->callback([&](){pear::cli::run_pull(targets); });
-    status->callback([&](){pear::cli::run_status(); });
+    status->callback([&](){pear::cli::run_status(json_status); });
 
     try {
         app.require_subcommand(1);
