@@ -131,6 +131,7 @@ TEST(net, pull_file) {
 
     EXPECT_EQ(peer.disconnect().code, 0);
     EXPECT_EQ(main.disconnect().code, 0);
+    EXPECT_EQ(1, 2);
 }
 
 #endif // PEAR_TEST_NET_PULL
