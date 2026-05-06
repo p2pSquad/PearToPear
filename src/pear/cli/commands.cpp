@@ -300,7 +300,7 @@ void run_update() {
     sync_with_master(true);
 }
 
-void run_ls() {
+void run_ls(bool json_format) {
 #ifdef PEAR_DEBUG
     std::cout << "[DEBUG] run_ls called\n";
 #endif
@@ -309,7 +309,9 @@ void run_ls() {
     pear::db::SqliteDatabase database(get_database_path(workspace));
 
     const auto files = database.getAllFiles();
-    print_file_tree(files, database);
+    if(!json_format) {
+        print_file_tree(files, database);
+    }
 }
 
 void run_push() {
@@ -516,7 +518,7 @@ void run_pull(const std::vector<std::string>& targets) {
     }
 }
 
-void run_status() {
+void run_status(bool json_format) {
 #ifdef PEAR_DEBUG
     std::cout << "[DEBUG] run_status called\n";
 #endif
@@ -525,7 +527,9 @@ void run_status() {
     pear::db::SqliteDatabase database(get_database_path(workspace));
 
     const StatusInfo status = collect_status_info(workspace, database);
-    print_status_info(status);
+    if(!json_format) {
+        print_status_info(status);
+    }
 }
 
 } // namespace pear::cli

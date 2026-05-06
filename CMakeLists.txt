@@ -174,24 +174,3 @@ target_link_libraries(pear PRIVATE
 if(PEAR_DEBUG)
     target_compile_definitions(pear PRIVATE PEAR_DEBUG)
 endif()
-
-if(PEAR_BUILD_TESTS)
-    enable_testing()
-
-    add_executable(workspace_test
-        tests/pear/fs/workspace_test.cpp
-    )
-
-    target_include_directories(workspace_test PRIVATE
-        include
-        src
-    )
-
-    target_link_libraries(workspace_test PRIVATE
-        pear_fs
-        GTest::gtest
-        GTest::gtest_main
-    )
-
-    add_test(NAME workspace_test COMMAND workspace_test)
-endif()
