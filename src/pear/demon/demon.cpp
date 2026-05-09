@@ -174,14 +174,14 @@ void handle_stop_signal(int /*signal_number*/) {
 void install_stop_handlers() {
     struct sigaction action {};
     action.sa_handler = handle_stop_signal;
-    ::sigemptyset(&action.sa_mask);
+    sigemptyset(&action.sa_mask);
     action.sa_flags = 0;
 
-    if (::sigaction(SIGTERM, &action, nullptr) == -1) {
+    if (sigaction(SIGTERM, &action, nullptr) == -1) {
         throw make_errno_error("failed to install SIGTERM handler");
     }
 
-    if (::sigaction(SIGINT, &action, nullptr) == -1) {
+    if (sigaction(SIGINT, &action, nullptr) == -1) {
         throw make_errno_error("failed to install SIGINT handler");
     }
 }
@@ -192,7 +192,7 @@ void install_stop_handlers() {
     try {
         stop_requested = 0;
 
-        if (::signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+        if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
             throw make_errno_error("failed to ignore SIGPIPE");
         }
 
