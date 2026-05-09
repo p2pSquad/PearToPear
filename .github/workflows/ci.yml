@@ -2,15 +2,10 @@ name: CI
 
 on:
   pull_request:
-    branches:
-      - main
-      - add_paths
-      - status-json-tests
   push:
     branches:
       - main
-      - add_paths
-      - status-json-tests
+  workflow_dispatch:
 
 jobs:
   build-and-test:
@@ -37,6 +32,32 @@ jobs:
 
       - name: configure
         run: cmake -S . -B build -DPEAR_BUILD_TESTS=ON -DPEAR_DEBUG=OFF
+
+      - name: build
+        run: cmake --build build -j
+
+      - name: test
+        run: ctest --test-dir build -V
+
+  macos-build-and-test:
+    name: macos-build-and-test
+    runs-on: macos-latest
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: install dependencies
+        run: |
+          brew update
+          brew install cmake pkg-config protobuf grpc sqlite openssl
+
+      - name: configure
+        run: |
+          cmake -S . -B build \
+            -DPEAR_BUILD_TESTS=ON \
+            -DPEAR_DEBUG=OFF \
+            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl)"
 
       - name: build
         run: cmake --build build -j
