@@ -15,7 +15,9 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <climits>
+#ifdef __linux__
 #include <linux/close_range.h>
+#endif
 #include <unistd.h>
 #include <fstream>
 
@@ -118,6 +120,7 @@ void redirect_stdio_to_devnull() {
 }
 
 void close_all_fds_except(unsigned int preserved_fd) {
+#ifdef __linux__
     // закрываем все дескрипторы кроме статусного
     // close_range - к сожалению есть зависимость от линукса((( 
     if (preserved_fd > 0) {
@@ -130,6 +133,19 @@ void close_all_fds_except(unsigned int preserved_fd) {
             throw make_errno_error("close_range failed");
         }
     }
+#else
+    long max_fd = ::sysconf(_SC_OPEN_MAX);
+
+    if (max_fd == -1) {
+        max_fd = 1024;
+    }
+
+    for (int fd = 0; fd < max_fd; ++fd) {
+        if (fd != static_cast<int>(preserved_fd)) {
+            ::close(fd);
+        }
+    }
+#endif
 }
 
 void write_pid_file(const std::filesystem::path& pid_file, pid_t pid) {
