@@ -8,7 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(PEAR_BUILD_TESTS "Build tests" OFF)
-option(PEAR_DEBUG "Enable debug logs" ON)
+option(PEAR_DEBUG "Enable debug logs" OFF)
 
 include(FetchContent)
 
@@ -29,9 +29,17 @@ if(PEAR_BUILD_TESTS)
     FetchContent_MakeAvailable(googletest)
 endif()
 
+FetchContent_Declare(
+    nlohmann_json
+    URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+)
+
+FetchContent_MakeAvailable(nlohmann_json)
+
 find_package(SQLite3 REQUIRED)
 find_package(Protobuf REQUIRED)
 find_package(PkgConfig REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 pkg_check_modules(GRPC REQUIRED IMPORTED_TARGET grpc++)
 find_program(GRPC_CPP_PLUGIN grpc_cpp_plugin REQUIRED)
@@ -82,10 +90,15 @@ target_link_libraries(pear_proto PUBLIC
 
 add_library(pear_fs
     src/pear/fs/workspace.cpp
+    src/pear/fs/hash.cpp
 )
 
 target_include_directories(pear_fs PUBLIC
     include
+)
+
+target_link_libraries(pear_fs PRIVATE
+    OpenSSL::Crypto
 )
 
 add_library(pear_db
@@ -145,7 +158,11 @@ target_link_libraries(pear_demon PUBLIC
 add_executable(pear
     src/main.cpp
     src/pear/cli/commands.cpp
-    src/pear/cli/command_helpers.cpp
+    src/pear/cli/command_utils.cpp
+    src/pear/cli/sync.cpp
+    src/pear/cli/status.cpp
+    src/pear/cli/output.cpp
+    src/pear/cli/json_output.cpp
 )
 
 target_include_directories(pear PRIVATE
@@ -156,6 +173,7 @@ target_include_directories(pear PRIVATE
 
 target_link_libraries(pear PRIVATE
     CLI11::CLI11
+    nlohmann_json::nlohmann_json
     pear_fs
     pear_db
     pear_net
@@ -166,23 +184,32 @@ if(PEAR_DEBUG)
     target_compile_definitions(pear PRIVATE PEAR_DEBUG)
 endif()
 
+if(PEAR_DEBUG)
+    target_compile_definitions(pear PRIVATE PEAR_DEBUG)
+endif()
+
 if(PEAR_BUILD_TESTS)
     enable_testing()
 
-    add_executable(workspace_test
-        tests/pear/fs/workspace_test.cpp
+    add_executable(tests
+        tests/tests.cpp
     )
 
-    target_include_directories(workspace_test PRIVATE
-        include
-        src
+    target_include_directories(tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
     )
 
-    target_link_libraries(workspace_test PRIVATE
-        pear_fs
+    target_link_libraries(tests PRIVATE
         GTest::gtest
-        GTest::gtest_main
+        nlohmann_json::nlohmann_json
     )
 
-    add_test(NAME workspace_test COMMAND workspace_test)
+    add_dependencies(tests pear)
+
+    include(GoogleTest)
+
+    gtest_discover_tests(tests
+        EXTRA_ARGS $<TARGET_FILE:pear>
+        DISCOVERY_TIMEOUT 30
+    )
 endif()

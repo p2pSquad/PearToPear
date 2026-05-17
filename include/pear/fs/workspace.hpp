@@ -41,6 +41,10 @@ public:
     std::vector<std::string> get_list_object_ids() const;
 
     bool has_objectfile(const std::string& object_name) const;
+
+    std::filesystem::path get_relative_path(const std::filesystem::path& path) const;
+    std::vector<std::filesystem::path> collect_files(const std::filesystem::path& path) const;
+
 };
 
 }  // namespace pear::storage

@@ -9,12 +9,15 @@ namespace {
 // - devices: зарегистрированные устройства сети
 //   (address уникален, device_id auto-assign на стороне ГУ)
 // - files: полная история версий метаданных файлов
-//   (ключ — пара (file_id, version))
+//   (ключ — пара (path, version))
+//   path - логический файл (relative path от корня workspace),
+//   object_hash - указатель на содержимое в .peer/obj/<hash>
 //   is_deleted хранит материализованное текущее состояние версии
 // - seq_id назначается ГУ,
 //   ВУ получает записи через UpdateDB и вставляет as-is
 // - staging_files: локальный staging этого узла
 //   Это не сетевое состояние, а очередь файлов для будущего push
+//   operation: 'add' | 'update' | 'delete'
 // - local_config: key/value конфиг этого узла
 //   (master_address, свой device_id)
 constexpr const char* kSchemaSql = R"sql(
@@ -24,23 +27,23 @@ CREATE TABLE IF NOT EXISTS devices(
 );
 
 CREATE TABLE IF NOT EXISTS files(
-    file_id TEXT NOT NULL,
+    path TEXT NOT NULL,
     version INTEGER NOT NULL,
-    name TEXT NOT NULL,
+    object_hash TEXT,
     owner_device_id INTEGER NOT NULL,
     is_deleted INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY(file_id, version)
+    PRIMARY KEY(path, version)
 );
 
-CREATE INDEX IF NOT EXISTS files_by_id ON files(file_id);
+CREATE INDEX IF NOT EXISTS files_by_path ON files(path);
 
 CREATE TABLE IF NOT EXISTS wal(
     seq_id INTEGER PRIMARY KEY,
     timestamp INTEGER NOT NULL,
     op_type INTEGER NOT NULL, -- 0=FILE_UPDATE, 1=DEVICE_UPDATE, 2=FILE_DELETE
 
-    file_id TEXT,
-    file_name TEXT,
+    file_path TEXT,
+    file_object_hash TEXT,
     file_version INTEGER,
     file_owner_device_id INTEGER,
 
@@ -49,9 +52,10 @@ CREATE TABLE IF NOT EXISTS wal(
 );
 
 CREATE TABLE IF NOT EXISTS staging_files(
-    file_id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    local_path TEXT NOT NULL
+    path TEXT PRIMARY KEY,
+    object_hash TEXT NOT NULL,
+    local_path TEXT NOT NULL,
+    operation TEXT NOT NULL DEFAULT 'add'
 );
 
 CREATE TABLE IF NOT EXISTS local_config(
@@ -60,7 +64,7 @@ CREATE TABLE IF NOT EXISTS local_config(
 );
 )sql";
 
-} // namespace
+}  // namespace
 
 void ensure_schema(Connection& c) {
     c.begin();
@@ -73,4 +77,4 @@ void ensure_schema(Connection& c) {
     }
 }
 
-} // namespace pear::db
+}  // namespace pear::db

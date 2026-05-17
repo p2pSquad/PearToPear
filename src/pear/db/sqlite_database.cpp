@@ -1,5 +1,4 @@
 #include <pear/db/sqlite_database.hpp>
-
 #include <string_view>
 
 #include "schema.hpp"
@@ -18,32 +17,14 @@ namespace {
 constexpr std::string_view kCfgMasterAddress = "master_address";
 constexpr std::string_view kCfgDeviceId = "device_id";
 
-std::string getLatestKnownFileName(Connection& conn, const std::string& file_id) {
-    auto st = conn.prepare(R"sql(
-        SELECT name
-        FROM files
-        WHERE file_id = ?1
-        ORDER BY version DESC
-        LIMIT 1;
-    )sql");
-
-    st.bind(1, file_id);
-
-    if (!st.step()) {
-        return file_id;
-    }
-
-    return st.col_text(0);
-}
-
 void bindWalEntryState(Statement& st, const WalEntryInfo& entry) {
     st.bind(1, entry.seq_id);
     st.bind(2, entry.timestamp);
     st.bind(3, static_cast<int>(entry.op_type));
 
     if (entry.op_type == WalOpTypeInfo::kFileUpdate) {
-        st.bind(4, entry.file.file_id);
-        st.bind(5, entry.file.name);
+        st.bind(4, entry.file.path);
+        st.bind(5, entry.file.object_hash);
         st.bind(6, entry.file.version);
         st.bind(7, entry.file.owner_device_id);
         st.bind_null(8);
@@ -52,7 +33,7 @@ void bindWalEntryState(Statement& st, const WalEntryInfo& entry) {
     }
 
     if (entry.op_type == WalOpTypeInfo::kFileDelete) {
-        st.bind(4, entry.file_delete.file_id);
+        st.bind(4, entry.file_delete.path);
         st.bind_null(5);
         st.bind(6, entry.file_delete.version);
         st.bind(7, entry.file_delete.owner_device_id);
@@ -69,7 +50,7 @@ void bindWalEntryState(Statement& st, const WalEntryInfo& entry) {
     st.bind(9, entry.device.address);
 }
 
-} // namespace
+}  // namespace
 
 SqliteDatabase::SqliteDatabase(const std::filesystem::path& db_path)
     : conn_(std::make_unique<Connection>(db_path)) {
@@ -85,8 +66,8 @@ std::vector<WalEntryInfo> SqliteDatabase::getWalEntriesSince(uint64_t last_seq_i
             seq_id,
             timestamp,
             op_type,
-            file_id,
-            file_name,
+            file_path,
+            file_object_hash,
             file_version,
             file_owner_device_id,
             device_id,
@@ -104,12 +85,12 @@ std::vector<WalEntryInfo> SqliteDatabase::getWalEntriesSince(uint64_t last_seq_i
         entry.op_type = static_cast<WalOpTypeInfo>(st.col_i64(2));
 
         if (entry.op_type == WalOpTypeInfo::kFileUpdate) {
-            entry.file.file_id = st.col_text(3);
-            entry.file.name = st.col_text(4);
+            entry.file.path = st.col_text(3);
+            entry.file.object_hash = st.col_text(4);
             entry.file.version = static_cast<uint64_t>(st.col_i64(5));
             entry.file.owner_device_id = static_cast<uint64_t>(st.col_i64(6));
         } else if (entry.op_type == WalOpTypeInfo::kFileDelete) {
-            entry.file_delete.file_id = st.col_text(3);
+            entry.file_delete.path = st.col_text(3);
             entry.file_delete.version = static_cast<uint64_t>(st.col_i64(5));
             entry.file_delete.owner_device_id = static_cast<uint64_t>(st.col_i64(6));
         } else if (entry.op_type == WalOpTypeInfo::kDeviceUpdate) {
@@ -126,41 +107,38 @@ void SqliteDatabase::applyWalEntryToState(const WalEntryInfo& entry) {
     if (entry.op_type == WalOpTypeInfo::kFileUpdate) {
         auto st = conn_->prepare(R"sql(
             INSERT OR REPLACE INTO files(
-                file_id,
+                path,
                 version,
-                name,
+                object_hash,
                 owner_device_id,
                 is_deleted
             )
             VALUES(?1, ?2, ?3, ?4, 0);
         )sql");
 
-        st.bind(1, entry.file.file_id);
+        st.bind(1, entry.file.path);
         st.bind(2, entry.file.version);
-        st.bind(3, entry.file.name);
+        st.bind(3, entry.file.object_hash);
         st.bind(4, entry.file.owner_device_id);
         st.run();
         return;
     }
 
     if (entry.op_type == WalOpTypeInfo::kFileDelete) {
-        std::string latest_name = getLatestKnownFileName(*conn_, entry.file_delete.file_id);
-
         auto st = conn_->prepare(R"sql(
             INSERT OR REPLACE INTO files(
-                file_id,
+                path,
                 version,
-                name,
+                object_hash,
                 owner_device_id,
                 is_deleted
             )
-            VALUES(?1, ?2, ?3, ?4, 1);
+            VALUES(?1, ?2, NULL, ?3, 1);
         )sql");
 
-        st.bind(1, entry.file_delete.file_id);
+        st.bind(1, entry.file_delete.path);
         st.bind(2, entry.file_delete.version);
-        st.bind(3, latest_name);
-        st.bind(4, entry.file_delete.owner_device_id);
+        st.bind(3, entry.file_delete.owner_device_id);
         st.run();
         return;
     }
@@ -189,8 +167,8 @@ void SqliteDatabase::applyWalEntries(const std::vector<WalEntryInfo>& entries) {
                     seq_id,
                     timestamp,
                     op_type,
-                    file_id,
-                    file_name,
+                    file_path,
+                    file_object_hash,
                     file_version,
                     file_owner_device_id,
                     device_id,
@@ -211,17 +189,18 @@ void SqliteDatabase::applyWalEntries(const std::vector<WalEntryInfo>& entries) {
     }
 }
 
-std::optional<FileUpdateInfo> SqliteDatabase::getFileInfo(const std::string& file_id, uint64_t version) {
+std::optional<FileUpdateInfo> SqliteDatabase::getFileInfoByPath(const std::string& path,
+                                                                uint64_t version) {
     if (version == 0) {
         auto st = conn_->prepare(R"sql(
-            SELECT file_id, name, version, owner_device_id, is_deleted
+            SELECT path, object_hash, version, owner_device_id, is_deleted
             FROM files
-            WHERE file_id = ?1
+            WHERE path = ?1
             ORDER BY version DESC
             LIMIT 1;
         )sql");
 
-        st.bind(1, file_id);
+        st.bind(1, path);
 
         if (!st.step()) {
             return std::nullopt;
@@ -234,31 +213,39 @@ std::optional<FileUpdateInfo> SqliteDatabase::getFileInfo(const std::string& fil
         }
 
         FileUpdateInfo info;
-        info.file_id = st.col_text(0);
-        info.name = st.col_text(1);
+        info.path = st.col_text(0);
+        info.object_hash = st.col_text(1);
         info.version = static_cast<uint64_t>(st.col_i64(2));
         info.owner_device_id = static_cast<uint64_t>(st.col_i64(3));
         return info;
     }
 
     auto st = conn_->prepare(R"sql(
-        SELECT file_id, name, version, owner_device_id
+        SELECT path, object_hash, version, owner_device_id
         FROM files
-        WHERE file_id = ?1 AND version = ?2 AND is_deleted = 0;
+        WHERE path = ?1 AND version = ?2 AND is_deleted = 0;
     )sql");
 
-    st.bind(1, file_id);
+    st.bind(1, path);
     st.bind(2, version);
 
     if (!st.step()) {
         return std::nullopt;
     }
     FileUpdateInfo info;
-    info.file_id = st.col_text(0);
-    info.name = st.col_text(1);
+    info.path = st.col_text(0);
+    info.object_hash = st.col_text(1);
     info.version = static_cast<uint64_t>(st.col_i64(2));
     info.owner_device_id = static_cast<uint64_t>(st.col_i64(3));
     return info;
+}
+
+std::optional<std::string> SqliteDatabase::getObjectHashByPath(const std::string& path) {
+    auto info = getFileInfoByPath(path, 0);
+    if (!info) {
+        return std::nullopt;
+    }
+    return info->object_hash;
 }
 
 uint64_t SqliteDatabase::addWalEntry(const WalEntryInfo& entry) {
@@ -276,8 +263,8 @@ uint64_t SqliteDatabase::addWalEntry(const WalEntryInfo& entry) {
                 seq_id,
                 timestamp,
                 op_type,
-                file_id,
-                file_name,
+                file_path,
+                file_object_hash,
                 file_version,
                 file_owner_device_id,
                 device_id,
@@ -310,14 +297,14 @@ uint64_t SqliteDatabase::getLastSeqId() {
     return static_cast<uint64_t>(st.col_i64(0));
 }
 
-uint64_t SqliteDatabase::getNextVersion(const std::string& file_id) {
+uint64_t SqliteDatabase::getNextVersion(const std::string& path) {
     auto st = conn_->prepare(R"sql(
         SELECT COALESCE(MAX(version), 0)
         FROM files
-        WHERE file_id = ?1;
+        WHERE path = ?1;
     )sql");
 
-    st.bind(1, file_id);
+    st.bind(1, path);
 
     if (!st.step()) {
         return 1;
@@ -329,22 +316,22 @@ uint64_t SqliteDatabase::getNextVersion(const std::string& file_id) {
 std::vector<FileUpdateInfo> SqliteDatabase::getAllFiles() {
     std::vector<FileUpdateInfo> out;
     auto st = conn_->prepare(R"sql(
-        SELECT f.file_id, f.name, f.version, f.owner_device_id
+        SELECT f.path, f.object_hash, f.version, f.owner_device_id
         FROM files f
         JOIN (
-            SELECT file_id, MAX(version) AS max_version
+            SELECT path, MAX(version) AS max_version
             FROM files
-            GROUP BY file_id
+            GROUP BY path
         ) latest
-            ON latest.file_id = f.file_id
+            ON latest.path = f.path
            AND latest.max_version = f.version
         WHERE f.is_deleted = 0
-        ORDER BY f.name ASC;
+        ORDER BY f.path ASC;
     )sql");
     while (st.step()) {
         FileUpdateInfo info;
-        info.file_id = st.col_text(0);
-        info.name = st.col_text(1);
+        info.path = st.col_text(0);
+        info.object_hash = st.col_text(1);
         info.version = static_cast<uint64_t>(st.col_i64(2));
         info.owner_device_id = static_cast<uint64_t>(st.col_i64(3));
         out.push_back(std::move(info));
@@ -352,32 +339,31 @@ std::vector<FileUpdateInfo> SqliteDatabase::getAllFiles() {
     return out;
 }
 
-void SqliteDatabase::stageFile(
-    const std::string& file_id,
-    const std::string& name,
-    const std::string& local_path
-) {
+void SqliteDatabase::stageFile(const std::string& path, const std::string& object_hash,
+                               const std::string& local_path, const std::string& operation) {
     auto st = conn_->prepare(R"sql(
-        INSERT INTO staging_files(file_id, name, local_path)
-        VALUES(?1, ?2, ?3)
-        ON CONFLICT(file_id) DO UPDATE
-        SET name = excluded.name,
-            local_path = excluded.local_path;
+        INSERT INTO staging_files(path, object_hash, local_path, operation)
+        VALUES(?1, ?2, ?3, ?4)
+        ON CONFLICT(path) DO UPDATE
+        SET object_hash = excluded.object_hash,
+            local_path = excluded.local_path,
+            operation = excluded.operation;
     )sql");
 
-    st.bind(1, file_id);
-    st.bind(2, name);
+    st.bind(1, path);
+    st.bind(2, object_hash);
     st.bind(3, local_path);
+    st.bind(4, operation);
     st.run();
 }
 
-void SqliteDatabase::unstageFile(const std::string& file_id) {
+void SqliteDatabase::unstageFile(const std::string& path) {
     auto st = conn_->prepare(R"sql(
         DELETE FROM staging_files
-        WHERE file_id = ?1;
+        WHERE path = ?1;
     )sql");
 
-    st.bind(1, file_id);
+    st.bind(1, path);
     st.run();
 }
 
@@ -385,16 +371,17 @@ std::vector<StagedFileInfo> SqliteDatabase::getStagedFiles() {
     std::vector<StagedFileInfo> out;
 
     auto st = conn_->prepare(R"sql(
-        SELECT file_id, name, local_path
+        SELECT path, object_hash, local_path, operation
         FROM staging_files
-        ORDER BY name ASC;
+        ORDER BY path ASC;
     )sql");
 
     while (st.step()) {
         StagedFileInfo info;
-        info.file_id = st.col_text(0);
-        info.name = st.col_text(1);
+        info.path = st.col_text(0);
+        info.object_hash = st.col_text(1);
         info.local_path = st.col_text(2);
+        info.operation = st.col_text(3);
         out.push_back(std::move(info));
     }
 
@@ -420,7 +407,7 @@ uint64_t SqliteDatabase::registerDevice(const std::string& address) {
 
     uint64_t new_id = static_cast<uint64_t>(sqlite3_last_insert_rowid(conn_->native()));
 
-    WalEntryInfo entry {};
+    WalEntryInfo entry{};
     entry.op_type = WalOpTypeInfo::kDeviceUpdate;
     entry.device.device_id = new_id;
     entry.device.address = address;
@@ -495,9 +482,9 @@ std::vector<std::string> SqliteDatabase::getAllFileStatus() {
     std::vector<std::string> out;
 
     for (const auto& file : getAllFiles()) {
-        out.push_back(file.name + "@" + std::to_string(file.version));
+        out.push_back(file.path + "@" + std::to_string(file.version));
     }
     return out;
 }
 
-} // namespace pear::db
+}  // namespace pear::db

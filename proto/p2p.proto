@@ -48,9 +48,8 @@ message PushWALResponse {
 }
 
 message DownloadRequest {
-  string file_id = 1;
-  uint64 version = 2;
-  uint64 requester_device_id = 3;
+  string object_hash = 1;
+  uint64 requester_device_id = 2;
 }
 
 message FileChunk {
@@ -66,14 +65,14 @@ enum WalOpType {
 }
 
 message FileUpdate {
-  string file_id = 1;
-  string name = 2;
+  string path = 1;
+  string object_hash = 2;
   uint64 version = 3;
   uint64 owner_device_id = 4;
 }
 
 message FileDelete {
-  string file_id = 1;
+  string path = 1;
   uint64 version = 2;
   uint64 owner_device_id = 3;
 }

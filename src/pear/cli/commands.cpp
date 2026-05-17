@@ -4,81 +4,21 @@
 #include <pear/fs/workspace.hpp>
 #include <pear/demon/demon.hpp>
 #include <pear/net/remote_client.hpp>
+#include <pear/fs/hash.hpp>
 
-#include "command_helpers.hpp"
+#include "command_utils.hpp"
+#include "output.hpp"
+#include "json_output.hpp"
+#include "status.hpp"
+#include "sync.hpp"
 
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
-#include <unordered_set>
 #include <algorithm>
 #include <chrono>
 #include <thread>
-
-namespace {
-
-constexpr const char* Grusha = "🍐 ";
-
-void sync_with_master(bool verbose) {
-    namespace fs = std::filesystem;
-
-    pear::storage::Workspace workspace = pear::storage::Workspace::discover();
-    pear::db::SqliteDatabase database(pear::cli::get_database_path(workspace));
-
-    const std::string master_address = database.getMasterAddress();
-    const uint64_t device_id = database.getDeviceId();
-
-    if (master_address.empty()) {
-        throw std::runtime_error("not connected: master address is empty");
-    }
-    if (device_id == 0) {
-        throw std::runtime_error("not connected: device id is unknown");
-    }
-
-    const uint64_t last_seq_id = database.getLastSeqId();
-    const auto wal_entries = pear::net::RemoteClient::UpdateDB(master_address, last_seq_id, device_id);
-
-    if (!wal_entries.empty()) {
-        database.applyWalEntries(wal_entries);
-    }
-
-    const auto tracked_files = database.getAllFiles();
-    std::unordered_set<std::string> desired_empty_names;
-
-    for (const auto& file : tracked_files) {
-        if (!fs::exists(workspace.get_root() / file.name)) {
-            desired_empty_names.insert(file.name);
-        }
-    }
-
-    for (const auto& entry : fs::directory_iterator(workspace.get_root())) {
-        if (!entry.is_regular_file() || entry.path().extension() != ".empty") {
-            continue;
-        }
-
-        const std::string file_name = entry.path().stem().string();
-
-        if (!desired_empty_names.contains(file_name)) {
-            fs::remove(entry.path());
-        }
-    }
-
-    std::vector<std::string> empty_names(desired_empty_names.begin(), desired_empty_names.end());
-    std::sort(empty_names.begin(), empty_names.end());
-    workspace.create_all_empty_files(empty_names);
-
-    if (!verbose) {
-        return;
-    }
-
-    if (wal_entries.empty()) {
-        std::cout << Grusha << "already up to date\n";
-    } else {
-        std::cout << Grusha << "applied " << wal_entries.size() << " wal entries\n";
-    }
-}
-
-} // namespace
+#include <unordered_set>
 
 namespace pear::cli {
 
@@ -210,56 +150,57 @@ void run_add(const std::vector<std::filesystem::path>& paths, bool all) {
 
     pear::storage::Workspace workspace = pear::storage::Workspace::discover();
     pear::db::SqliteDatabase database(get_database_path(workspace));
-    const fs::path workspace_root = fs::weakly_canonical(workspace.get_root());
-    const fs::path peer_dir = fs::weakly_canonical(workspace.get_peer_dir());
 
     bool had_errors = false;
 
-    auto try_stage_file = [&](const fs::path& input_path, bool is_resolved_path) {
+    auto stage_file = [&](const fs::path& file_path) {
         try {
-            fs::path resolved_path = is_resolved_path ? input_path : resolve_existing_file(input_path);
-
-            if (!is_path_within(workspace_root, resolved_path)) {
-                throw std::runtime_error("path is outside workspace");
-            }
-            if (is_path_within(peer_dir, resolved_path)) {
-                throw std::runtime_error("path is inside .peer");
+            if (file_path.extension() == ".empty") {
+                return; 
             }
 
-            const std::string file_name = resolved_path.filename().string();
+            const std::string relative_path = workspace.get_relative_path(file_path).generic_string();
+            const std::string object_hash = pear::storage::get_file_hash(file_path);
+            const auto current_object_hash = database.getObjectHashByPath(relative_path);
 
-            if (file_name.empty()) {
-                throw std::runtime_error("path has empty file name");
-            }
-            if (resolved_path.extension() == ".empty") {
-                throw std::runtime_error("cannot stage .empty placeholder");
+            if (current_object_hash && *current_object_hash == object_hash) {
+                database.unstageFile(relative_path);
+                std::cout << Grusha << "already up to date " << relative_path << '\n';
+                return;
             }
 
-            database.stageFile(file_name, file_name, resolved_path.string());
-            std::cout << Grusha << "staged " << file_name << '\n';
+            if (!workspace.has_objectfile(object_hash)) {
+                workspace.create_objectfile(object_hash, file_path);
+            }
+
+            const std::string operation = current_object_hash ? "update" : "add";
+            database.stageFile(relative_path, object_hash, file_path.string(), operation);
+
+            std::cout << Grusha << "staged " << relative_path << '\n';
         } catch (const std::exception& error) {
-            std::cerr << "error: failed to stage " << input_path << ": " << error.what() << '\n';
+            std::cerr << "error: failed to stage " << file_path << ": " << error.what() << '\n';
+            had_errors = true;
+        }
+    };
+
+    auto stage_path = [&](const fs::path& path) {
+        try {
+            const auto files = workspace.collect_files(path);
+
+            for (const auto& file_path : files) {
+                stage_file(file_path);
+            }
+        } catch (const std::exception& error) {
+            std::cerr << "error: failed to stage " << path << ": " << error.what() << '\n';
             had_errors = true;
         }
     };
 
     if (all) {
-        for (const auto& entry : fs::directory_iterator(workspace_root)) {
-            if (!entry.is_regular_file()) {
-                continue;
-            }
-
-            fs::path resolved_path = fs::weakly_canonical(entry.path());
-
-            if (resolved_path.extension() == ".empty") {
-                continue;
-            }
-
-            try_stage_file(resolved_path, true);
-        }
+        stage_path(workspace.get_root());
     } else {
         for (const auto& path : paths) {
-            try_stage_file(path, false);
+            stage_path(path);
         }
     }
 
@@ -290,30 +231,61 @@ void run_unstage(const std::vector<std::filesystem::path>& paths, bool all) {
     }
 
     const auto staged_files = database.getStagedFiles();
-    std::unordered_set<std::string> staged_file_ids;
-    for (const auto& file : staged_files) {
-        staged_file_ids.insert(file.file_id);
+
+    if (staged_files.empty()) {
+        std::cout << Grusha << "nothing to unstage\n";
+        return;
     }
 
     bool had_errors = false;
+    std::unordered_set<std::string> removed_paths;
+
+    auto should_unstage = [](const std::string& staged_path, const std::string& target_path) {
+        if (target_path == ".") {
+            return true;
+        }
+
+        if (staged_path == target_path) {
+            return true;
+        }
+
+        const std::string prefix = target_path + "/";
+        return staged_path.rfind(prefix, 0) == 0;
+    };
 
     for (const auto& path : paths) {
-        std::string file_id = path.filename().string();
+        try {
+            const std::string target_path = workspace.get_relative_path(path).generic_string();
 
-        if (file_id.empty()) {
-            std::cerr << "error: failed to unstage: invalid path: " << path << '\n';
+            std::vector<std::string> paths_to_unstage;
+
+            for (const auto& file : staged_files) {
+                if (removed_paths.contains(file.path)) {
+                    continue;
+                }
+
+                if (should_unstage(file.path, target_path)) {
+                    paths_to_unstage.push_back(file.path);
+                }
+            }
+
+            if (paths_to_unstage.empty()) {
+                std::cerr << "error: nothing staged under " << target_path << '\n';
+                had_errors = true;
+                continue;
+            }
+
+            std::sort(paths_to_unstage.begin(), paths_to_unstage.end());
+
+            for (const auto& staged_path : paths_to_unstage) {
+                database.unstageFile(staged_path);
+                removed_paths.insert(staged_path);
+                std::cout << Grusha << "unstaged " << staged_path << '\n';
+            }
+        } catch (const std::exception& error) {
+            std::cerr << "error: failed to unstage " << path << ": " << error.what() << '\n';
             had_errors = true;
-            continue;
         }
-
-        if (!staged_file_ids.contains(file_id)) {
-            std::cerr << "error: failed to unstage " << file_id << ": file is not staged\n";
-            had_errors = true;
-            continue;
-        }
-
-        database.unstageFile(file_id);
-        std::cout << Grusha << "unstaged " << file_id << '\n';
     }
 
     if (had_errors) {
@@ -329,20 +301,20 @@ void run_update() {
     sync_with_master(true);
 }
 
-void run_ls() {
+void run_ls(bool json_format) {
 #ifdef PEAR_DEBUG
     std::cout << "[DEBUG] run_ls called\n";
 #endif
 
     pear::storage::Workspace workspace = pear::storage::Workspace::discover();
     pear::db::SqliteDatabase database(get_database_path(workspace));
+
     const auto files = database.getAllFiles();
-    if (files.empty()) {
-        std::cout << Grusha << "workspace is empty\n";
-        return;
-    }
-    for (const auto& file : files) {
-        std::cout << Grusha << file.name << " version:" << file.version << " owner:" << file.owner_device_id << '\n';
+
+    if (json_format) {
+        print_ls_json(files, database);
+    } else {
+        print_file_tree(files, database);
     }
 }
 
@@ -380,29 +352,31 @@ void run_push() {
 
     bool had_errors = false;
     std::vector<pear::net::WalEntryInfo> wal_entries;
-    std::vector<std::string> pushed_file_ids;
-    std::vector<std::string> pushed_file_names;
+    std::vector<std::string> pushed_paths;
 
     for (const auto& file : staged_files) {
         try {
-            const std::filesystem::path local_path = resolve_existing_file(file.local_path);
-            const uint64_t version = database.getNextVersion(file.file_id);
-            const std::string object_name = file.file_id + "." + std::to_string(version);
+            if (file.operation != "add" && file.operation != "update") {
+                throw std::runtime_error("unsupported staged operation: " + file.operation);
+            }
 
-            workspace.create_objectfile(object_name, local_path);
+            if (!workspace.has_objectfile(file.object_hash)) {
+                throw std::runtime_error("staged object does not exist: " + file.object_hash);
+            }
+
+            const uint64_t version = database.getNextVersion(file.path);
 
             pear::net::WalEntryInfo entry {};
             entry.op_type = pear::net::WalOpTypeInfo::kFileUpdate;
-            entry.file.file_id = file.file_id;
-            entry.file.name = file.name;
+            entry.file.path = file.path;
+            entry.file.object_hash = file.object_hash;
             entry.file.version = version;
             entry.file.owner_device_id = device_id;
 
             wal_entries.push_back(entry);
-            pushed_file_ids.push_back(file.file_id);
-            pushed_file_names.push_back(file.name);
+            pushed_paths.push_back(file.path);
         } catch (const std::exception& error) {
-            std::cerr << "error: failed to prepare push for " << file.name << ": " << error.what() << '\n';
+            std::cerr << "error: failed to prepare push for " << file.path << ": " << error.what() << '\n';
             had_errors = true;
         }
     }
@@ -416,14 +390,14 @@ void run_push() {
         throw std::runtime_error("failed to push wal to main node");
     }
 
-    for (const auto& file_id : pushed_file_ids) {
-        database.unstageFile(file_id);
+    for (const auto& path : pushed_paths) {
+        database.unstageFile(path);
     }
 
     sync_with_master(false);
 
-    for (const auto& file_name : pushed_file_names) {
-        std::cout << Grusha << "pushed " << file_name << '\n';
+    for (const auto& path : pushed_paths) {
+        std::cout << Grusha << "pushed " << path << '\n';
     }
 
     if (had_errors) {
@@ -446,12 +420,14 @@ void run_pull(const std::vector<std::string>& targets) {
 
     {
         pear::db::SqliteDatabase database(get_database_path(workspace));
+
         const std::string master_address = database.getMasterAddress();
         const uint64_t device_id = database.getDeviceId();
 
         if (master_address.empty()) {
             throw std::runtime_error("not connected: master address is empty");
         }
+
         if (device_id == 0) {
             throw std::runtime_error("not connected: device id is unknown");
         }
@@ -460,49 +436,81 @@ void run_pull(const std::vector<std::string>& targets) {
     sync_with_master(false);
 
     pear::db::SqliteDatabase database(get_database_path(workspace));
+
     const uint64_t device_id = database.getDeviceId();
+    const auto all_files = database.getAllFiles();
 
     bool had_errors = false;
 
-    for (const auto& target : targets) {
-        try {
-            auto file_info = database.getFileInfo(target, 0);
+    auto pull_file = [&](const pear::net::FileUpdateInfo& file) {
+        if (file.object_hash.empty()) {
+            throw std::runtime_error("file has empty object hash");
+        }
 
-            if (!file_info) {
-                for (const auto& file : database.getAllFiles()) {
-                    if (file.name == target) {
-                        file_info = file;
-                        break;
-                    }
-                }
-            }
+        const fs::path destination_path = workspace.get_root() / file.path;
+        fs::create_directories(destination_path.parent_path());
 
-            if (!file_info) {
-                throw std::runtime_error("file not found");
-            }
-
-            const std::string owner_address = database.getDeviceAddress(file_info->owner_device_id);
+        if (workspace.has_objectfile(file.object_hash)) {
+            fs::copy_file(workspace.get_objectfile_path(file.object_hash), destination_path, fs::copy_options::overwrite_existing);
+        } else {
+            const std::string owner_address = database.getDeviceAddress(file.owner_device_id);
 
             if (owner_address.empty()) {
                 throw std::runtime_error("owner address is unknown");
             }
 
-            const fs::path destination_path = workspace.get_root() / file_info->name;
+            pear::net::RemoteClient::DownloadFile(owner_address, file.object_hash, device_id, destination_path.string());
+        }
 
-            pear::net::RemoteClient::DownloadFile(
-                owner_address,
-                file_info->file_id,
-                file_info->version,
-                device_id,
-                destination_path.string()
-            );
+        const fs::path empty_path = workspace.get_root() / (file.path + ".empty");
+        if (fs::exists(empty_path)) {
+            fs::remove(empty_path);
+        }
 
-            const fs::path empty_path = workspace.get_root() / (file_info->name + ".empty");
-            if (fs::exists(empty_path)) {
-                fs::remove(empty_path);
+        std::cout << Grusha << "pulled " << file.path << '\n';
+    };
+
+    for (const auto& target : targets) {
+        try {
+            const std::string cleaned_target = remove_empty_suffix(target);
+            const std::string target_path = workspace.get_relative_path(fs::path(cleaned_target)).generic_string();
+
+            std::vector<pear::net::FileUpdateInfo> files_to_pull;
+
+            auto file_info = database.getFileInfoByPath(target_path, 0);
+            if (file_info) {
+                files_to_pull.push_back(*file_info);
+            } else {
+                std::string prefix = target_path;
+
+                while (!prefix.empty() && prefix.back() == '/') {
+                    prefix.pop_back();
+                }
+
+                prefix += '/';
+
+                for (const auto& file : all_files) {
+                    if (file.path.rfind(prefix, 0) == 0) {
+                        files_to_pull.push_back(file);
+                    }
+                }
             }
 
-            std::cout << Grusha << "pulled " << file_info->name << '\n';
+            if (files_to_pull.empty()) {
+                throw std::runtime_error("file or directory not found");
+            }
+
+            std::sort(
+                files_to_pull.begin(),
+                files_to_pull.end(),
+                [](const auto& lhs, const auto& rhs) {
+                    return lhs.path < rhs.path;
+                }
+            );
+
+            for (const auto& file : files_to_pull) {
+                pull_file(file);
+            }
         } catch (const std::exception& error) {
             std::cerr << "error: failed to pull " << target << ": " << error.what() << '\n';
             had_errors = true;
@@ -514,95 +522,20 @@ void run_pull(const std::vector<std::string>& targets) {
     }
 }
 
-void run_status() {
+void run_status(bool json_format) {
 #ifdef PEAR_DEBUG
     std::cout << "[DEBUG] run_status called\n";
 #endif
 
-    namespace fs = std::filesystem;
-
-    constexpr const char* Reset = "\033[0m";
-    constexpr const char* Green = "\033[32m";
-    constexpr const char* Red = "\033[31m";
-
     pear::storage::Workspace workspace = pear::storage::Workspace::discover();
     pear::db::SqliteDatabase database(get_database_path(workspace));
-    const auto master_address = database.getMasterAddress();
-    const auto device_id = database.getDeviceId();
-    const auto staged_files = database.getStagedFiles();
-    const auto tracked_files = database.getAllFiles();
-    const fs::path workspace_root = fs::weakly_canonical(workspace.get_root());
-    const fs::path peer_dir = fs::weakly_canonical(workspace.get_peer_dir());
 
-    std::unordered_set<std::string> staged_file_ids;
-    for (const auto& file : staged_files) {
-        staged_file_ids.insert(file.file_id);
-    }
+    const StatusInfo status = collect_status_info(workspace, database);
 
-    std::unordered_set<std::string> tracked_file_ids;
-    for (const auto& file : tracked_files) {
-        tracked_file_ids.insert(file.file_id);
-    }
-
-    std::vector<std::string> untracked_entries;
-    for (const auto& entry : fs::directory_iterator(workspace_root)) {
-        const fs::path entry_path = fs::weakly_canonical(entry.path());
-        if (entry_path == peer_dir) {
-            continue;
-        }
-        const std::string name = entry_path.filename().string();
-        if (name.empty() || entry_path.extension() == ".empty") {
-            continue;
-        }
-        if (entry.is_directory()) {
-            untracked_entries.push_back(name + "/");
-            continue;
-        }
-        if (!entry.is_regular_file()) {
-            continue;
-        }
-        if (staged_file_ids.contains(name) || tracked_file_ids.contains(name)) {
-            continue;
-        }
-        untracked_entries.push_back(name);
-    }
-
-    std::sort(untracked_entries.begin(), untracked_entries.end());
-
-    std::cout << Grusha << "gu: ";
-    if (master_address.empty()) {
-        std::cout << "not connected\n";
+    if (json_format) {
+        print_status_json(status);
     } else {
-        std::cout << master_address << '\n';
-    }
-
-    std::cout << Grusha << "device_id: ";
-    if (device_id == 0) {
-        std::cout << "unknown\n";
-    } else {
-        std::cout << device_id << '\n';
-    }
-
-    if (staged_files.empty() && untracked_entries.empty()) {
-        std::cout << '\n' << Grusha << "working tree clean\n";
-        return;
-    }
-
-    if (!staged_files.empty()) {
-        std::cout << '\n' << Grusha << "Changes to be pushed:\n";
-        std::cout << "  (use \"pear unstage <file>...\" to unstage)\n";
-        std::cout << "  (if you changed a staged file, run \"pear add <file>\" again before push)\n";
-        for (const auto& file : staged_files) {
-            std::cout << "        staged:   " << Green << file.name << Reset << '\n';
-        }
-    }
-
-    if (!untracked_entries.empty()) {
-        std::cout << '\n' << Grusha << "Untracked files:\n";
-        std::cout << "  (use \"pear add <file>...\" to include in what will be pushed)\n";
-        for (const auto& entry : untracked_entries) {
-            std::cout << "        " << Red << entry << Reset << '\n';
-        }
+        print_status_info(status);
     }
 }
 
