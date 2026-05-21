@@ -564,8 +564,7 @@ void run_log(size_t tail) {
     const fs::path log_path = workspace.get_root() / ".peer" / "meta" / "pear.log";
 
     if (!fs::exists(log_path)) {
-        std::cout << Grusha << "no log entries
-";
+        std::cout << Grusha << "no log entries\n";
         return;
     }
 
@@ -583,8 +582,7 @@ void run_log(size_t tail) {
     }
 
     if (lines.empty()) {
-        std::cout << Grusha << "no log entries
-";
+        std::cout << Grusha << "no log entries\n";
         return;
     }
 
