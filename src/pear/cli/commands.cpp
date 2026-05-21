@@ -12,7 +12,10 @@
 #include "status.hpp"
 #include "sync.hpp"
 
+#include <pear/cli/logger.hpp>
+
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <algorithm>
@@ -30,6 +33,7 @@ void run_init(const std::filesystem::path& workspace_path) {
 
     pear::storage::Workspace workspace = pear::storage::Workspace::init(workspace_path);
     [[maybe_unused]] pear::db::SqliteDatabase database(get_database_path(workspace));
+    log_info(workspace.get_root(), "init", "initialized workspace");
     std::cout << Grusha << "initialized workspace at " << workspace.get_root() << '\n';
 }
 
@@ -53,6 +57,7 @@ void run_deinit() {
         }
 
         if (pear::demon::is_alive(workspace.get_root())) {
+            log_error(workspace.get_root(), "deinit", "failed to stop daemon before deinit");
             throw std::runtime_error("failed to stop demon before deinit");
         }
     }
@@ -64,6 +69,7 @@ void run_deinit() {
     }
 
     fs::remove_all(workspace.get_peer_dir());
+    log_info(workspace.get_root(), "deinit", "deinitialized workspace");
     std::cout << Grusha << "deinitialized workspace at " << workspace.get_root() << '\n';
 }
 
@@ -79,6 +85,7 @@ void run_connect(const std::string& gu_address, const std::string& listen_addres
     pear::db::SqliteDatabase database(get_database_path(workspace));
 
     pear::demon::spawn(workspace.get_root(), listen_address, is_main);
+    log_info(workspace.get_root(), "connect", "daemon spawn success");
 
     try {
         if (is_main) {
@@ -88,6 +95,7 @@ void run_connect(const std::string& gu_address, const std::string& listen_addres
             database.setDeviceId(device_id);
 
             std::cout << Grusha << "connected as main node at " << listen_address << " device_id=" << device_id << '\n';
+            log_info(workspace.get_root(), "connect", "connected as main node");
             return;
         }
 
@@ -99,10 +107,13 @@ void run_connect(const std::string& gu_address, const std::string& listen_addres
         database.setDeviceId(device_id);
 
         std::cout << Grusha << "connected to " << gu_address << " as device_id=" << device_id << '\n';
+        log_info(workspace.get_root(), "connect", "connected to main node");
     } catch (...) {
+        log_error(workspace.get_root(), "connect", "connect failed");
         try {
             if (pear::demon::is_alive(workspace.get_root())) {
                 pear::demon::kill(workspace.get_root());
+                log_info(workspace.get_root(), "connect", "daemon killed after connect failure");
             }
         } catch (...) {
         }
@@ -122,14 +133,17 @@ void run_disconnect() {
 
     if (demon_was_alive) {
         pear::demon::kill(workspace.get_root());
+        log_info(workspace.get_root(), "disconnect", "daemon killed");
     }
 
     database.setMasterAddress("");
     database.setDeviceId(0);
 
     if (demon_was_alive) {
+        log_info(workspace.get_root(), "disconnect", "disconnected");
         std::cout << Grusha << "disconnected\n";
     } else {
+        log_info(workspace.get_root(), "disconnect", "already disconnected");
         std::cout << Grusha << "already disconnected\n";
     }
 }
@@ -177,8 +191,10 @@ void run_add(const std::vector<std::filesystem::path>& paths, bool all) {
             database.stageFile(relative_path, object_hash, file_path.string(), operation);
 
             std::cout << Grusha << "staged " << relative_path << '\n';
+            log_info(workspace.get_root(), "add", "staged " + relative_path);
         } catch (const std::exception& error) {
             std::cerr << "error: failed to stage " << file_path << ": " << error.what() << '\n';
+            log_error(workspace.get_root(), "add", "failed to stage " + file_path.string());
             had_errors = true;
         }
     };
@@ -192,6 +208,7 @@ void run_add(const std::vector<std::filesystem::path>& paths, bool all) {
             }
         } catch (const std::exception& error) {
             std::cerr << "error: failed to stage " << path << ": " << error.what() << '\n';
+            log_error(workspace.get_root(), "add", "failed to stage path " + path.string());
             had_errors = true;
         }
     };
@@ -205,6 +222,7 @@ void run_add(const std::vector<std::filesystem::path>& paths, bool all) {
     }
 
     if (had_errors) {
+        log_error(workspace.get_root(), "add", "failed to stage some files");
         throw std::runtime_error("failed to stage some files");
     }
 }
@@ -226,6 +244,7 @@ void run_unstage(const std::vector<std::filesystem::path>& paths, bool all) {
 
     if (all) {
         database.clearStaging();
+        log_info(workspace.get_root(), "unstage", "cleared staging");
         std::cout << Grusha << "cleared staging\n";
         return;
     }
@@ -271,6 +290,7 @@ void run_unstage(const std::vector<std::filesystem::path>& paths, bool all) {
 
             if (paths_to_unstage.empty()) {
                 std::cerr << "error: nothing staged under " << target_path << '\n';
+                log_error(workspace.get_root(), "unstage", "nothing staged under " + target_path);
                 had_errors = true;
                 continue;
             }
@@ -281,14 +301,17 @@ void run_unstage(const std::vector<std::filesystem::path>& paths, bool all) {
                 database.unstageFile(staged_path);
                 removed_paths.insert(staged_path);
                 std::cout << Grusha << "unstaged " << staged_path << '\n';
+                log_info(workspace.get_root(), "unstage", "unstaged " + staged_path);
             }
         } catch (const std::exception& error) {
             std::cerr << "error: failed to unstage " << path << ": " << error.what() << '\n';
+            log_error(workspace.get_root(), "unstage", "failed to unstage " + path.string());
             had_errors = true;
         }
     }
 
     if (had_errors) {
+        log_error(workspace.get_root(), "unstage", "failed to unstage some files");
         throw std::runtime_error("failed to unstage some files");
     }
 }
@@ -298,7 +321,9 @@ void run_update() {
     std::cout << "[DEBUG] run_update called\n";
 #endif
 
+    pear::storage::Workspace workspace = pear::storage::Workspace::discover();
     sync_with_master(true);
+    log_info(workspace.get_root(), "update", "workspace metadata updated");
 }
 
 void run_ls(bool json_format) {
@@ -346,6 +371,7 @@ void run_push() {
     const auto staged_files = database.getStagedFiles();
 
     if (staged_files.empty()) {
+        log_info(workspace.get_root(), "push", "nothing to push");
         std::cout << Grusha << "nothing to push\n";
         return;
     }
@@ -377,16 +403,19 @@ void run_push() {
             pushed_paths.push_back(file.path);
         } catch (const std::exception& error) {
             std::cerr << "error: failed to prepare push for " << file.path << ": " << error.what() << '\n';
+            log_error(workspace.get_root(), "push", "failed to prepare " + file.path);
             had_errors = true;
         }
     }
 
     if (wal_entries.empty()) {
+        log_error(workspace.get_root(), "push", "failed to prepare push");
         throw std::runtime_error("failed to prepare push");
     }
 
     std::vector<uint64_t> assigned_seq_ids;
     if (!pear::net::RemoteClient::PushWAL(master_address, device_id, wal_entries, assigned_seq_ids)) {
+        log_error(workspace.get_root(), "push", "failed to push WAL to main");
         throw std::runtime_error("failed to push wal to main node");
     }
 
@@ -398,9 +427,11 @@ void run_push() {
 
     for (const auto& path : pushed_paths) {
         std::cout << Grusha << "pushed " << path << '\n';
+        log_info(workspace.get_root(), "push", "pushed " + path);
     }
 
     if (had_errors) {
+        log_error(workspace.get_root(), "push", "failed to push some staged files");
         throw std::runtime_error("failed to push some staged files");
     }
 }
@@ -468,6 +499,7 @@ void run_pull(const std::vector<std::string>& targets) {
         }
 
         std::cout << Grusha << "pulled " << file.path << '\n';
+        log_info(workspace.get_root(), "pull", "pulled " + file.path);
     };
 
     for (const auto& target : targets) {
@@ -513,12 +545,53 @@ void run_pull(const std::vector<std::string>& targets) {
             }
         } catch (const std::exception& error) {
             std::cerr << "error: failed to pull " << target << ": " << error.what() << '\n';
+            log_error(workspace.get_root(), "pull", "failed to pull " + target);
             had_errors = true;
         }
     }
 
     if (had_errors) {
+        log_error(workspace.get_root(), "pull", "failed to pull some files");
         throw std::runtime_error("failed to pull some files");
+    }
+}
+
+
+void run_log(size_t tail) {
+    namespace fs = std::filesystem;
+
+    pear::storage::Workspace workspace = pear::storage::Workspace::discover();
+    const fs::path log_path = workspace.get_root() / ".peer" / "meta" / "pear.log";
+
+    if (!fs::exists(log_path)) {
+        std::cout << Grusha << "no log entries
+";
+        return;
+    }
+
+    std::ifstream input(log_path);
+
+    if (!input.is_open()) {
+        throw std::runtime_error("failed to open log file");
+    }
+
+    std::vector<std::string> lines;
+    std::string line;
+
+    while (std::getline(input, line)) {
+        lines.push_back(line);
+    }
+
+    if (lines.empty()) {
+        std::cout << Grusha << "no log entries
+";
+        return;
+    }
+
+    const size_t start = lines.size() > tail ? lines.size() - tail : 0;
+
+    for (size_t index = start; index < lines.size(); ++index) {
+        std::cout << lines[index] << '\n';
     }
 }
 

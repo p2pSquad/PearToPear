@@ -61,6 +61,10 @@ int main(int argc, char** argv) {
     CLI::App* status = app.add_subcommand("status", "Show workspace changes");
     status->add_flag("--json", json_status, "Output status in JSON format");
 
+    size_t log_tail = 100;
+    CLI::App* log = app.add_subcommand("log", "Show pear operation log");
+    log->add_option("--tail", log_tail, "Show last N log lines");
+
     init->callback([&]() { pear::cli::run_init(workspace_path); });
     deinit->callback([&]() { pear::cli::run_deinit(); });
     connect->callback([&]() {
@@ -87,6 +91,7 @@ int main(int argc, char** argv) {
     push->callback([&](){pear::cli::run_push(); });
     pull->callback([&](){pear::cli::run_pull(targets); });
     status->callback([&](){pear::cli::run_status(json_status); });
+    log->callback([&](){pear::cli::run_log(log_tail); });
 
     try {
         app.require_subcommand(1);

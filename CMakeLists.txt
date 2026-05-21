@@ -163,6 +163,7 @@ add_executable(pear
     src/pear/cli/status.cpp
     src/pear/cli/output.cpp
     src/pear/cli/json_output.cpp
+    src/pear/cli/logger.cpp
 )
 
 target_include_directories(pear PRIVATE

@@ -58,6 +58,39 @@ TEST(add, directory) {
 
 #endif // PEAR_TEST_ADD_DIRECTORY
 
+#ifdef PEAR_TEST_LOG
+
+TEST(log, basic_tail) {
+    Repo repo;
+
+    EXPECT_EQ(repo.init().code, 0);
+
+    repo.write_file("a.txt", "hello\n");
+    EXPECT_EQ(repo.add({"a.txt"}).code, 0);
+    EXPECT_EQ(repo.status().staged.size(), 1u);
+
+    const CommandResult full_log = repo.log();
+    EXPECT_EQ(full_log.code, 0) << full_log.out << full_log.err;
+    EXPECT_FALSE(full_log.out.empty()) << full_log.err;
+
+    const CommandResult tail_log = repo.log_tail(1);
+    EXPECT_EQ(tail_log.code, 0) << tail_log.out << tail_log.err;
+
+    size_t non_empty_lines = 0;
+    std::stringstream stream(tail_log.out);
+    std::string line;
+
+    while (std::getline(stream, line)) {
+        if (!line.empty()) {
+            ++non_empty_lines;
+        }
+    }
+
+    EXPECT_LE(non_empty_lines, 1u);
+}
+
+#endif // PEAR_TEST_LOG
+
 #ifdef PEAR_TEST_NET_UPDATE
 
 TEST(net, update_metadata) {
