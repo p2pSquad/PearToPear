@@ -55,6 +55,9 @@ class SqliteDatabase {
 
     uint64_t registerDevice(const std::string& address);
     std::string getDeviceAddress(uint64_t device_id);
+    std::vector<uint64_t> getObjectOwnerDeviceIds(const std::string& object_hash);
+    std::vector<std::string> getObjectOwnerAddresses(const std::string& object_hash);
+    bool hasObjectOwner(const std::string& object_hash, uint64_t device_id);
 
     void setMasterAddress(const std::string& address);
     std::string getMasterAddress();

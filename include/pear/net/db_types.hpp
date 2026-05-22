@@ -6,7 +6,7 @@
 
 namespace pear::net {
 
-enum WalOpTypeInfo { kFileUpdate = 0, kDeviceUpdate = 1, kFileDelete = 2 };
+enum WalOpTypeInfo { kFileUpdate = 0, kDeviceUpdate = 1, kFileDelete = 2, kObjectOwnerUpdate = 3 };
 
 // path - логический файл в общем репозитории (relative path от корня workspace)
 // object_hash - конкретная версия содержимого, лежит в .peer/obj/<hash>
@@ -29,6 +29,11 @@ struct DeviceUpdateInfo {
     std::string address;
 };
 
+struct ObjectOwnerUpdateInfo {
+    std::string object_hash;
+    uint64_t owner_device_id;
+};
+
 struct WalEntryInfo {
     uint64_t seq_id;
     uint64_t timestamp;
@@ -37,6 +42,7 @@ struct WalEntryInfo {
     FileUpdateInfo file;
     FileDeleteInfo file_delete;
     DeviceUpdateInfo device;
+    ObjectOwnerUpdateInfo object_owner;
 };
 
 }  // namespace pear::net

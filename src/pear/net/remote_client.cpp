@@ -39,6 +39,13 @@ void fillProtoWalEntry(WalEntry* proto_entry, const WalEntryInfo& entry) {
         auto* device_update = proto_entry->mutable_device_update();
         device_update->set_device_id(entry.device.device_id);
         device_update->set_address(entry.device.address);
+        return;
+    }
+
+    if (entry.op_type == WalOpTypeInfo::kObjectOwnerUpdate) {
+        auto* object_owner_update = proto_entry->mutable_object_owner_update();
+        object_owner_update->set_object_hash(entry.object_owner.object_hash);
+        object_owner_update->set_owner_device_id(entry.object_owner.owner_device_id);
     }
 }
 
@@ -67,6 +74,12 @@ WalEntryInfo parseProtoWalEntry(const WalEntry& proto_entry) {
     if (proto_entry.has_device_update()) {
         entry.device.device_id = proto_entry.device_update().device_id();
         entry.device.address = proto_entry.device_update().address();
+        return entry;
+    }
+
+    if (proto_entry.has_object_owner_update()) {
+        entry.object_owner.object_hash = proto_entry.object_owner_update().object_hash();
+        entry.object_owner.owner_device_id = proto_entry.object_owner_update().owner_device_id();
     }
 
     return entry;

@@ -47,6 +47,7 @@ struct FileEntry {
     uint64_t version = 0;
     uint64_t owner_device_id = 0;
     std::string owner_address;
+    std::vector<uint64_t> object_owner_device_ids;
 };
 
 struct Ls {
@@ -241,7 +242,8 @@ public:
                 item.at("object_hash").get<std::string>(),
                 item.at("version").get<uint64_t>(),
                 item.at("owner_device_id").get<uint64_t>(),
-                item.at("owner_address").get<std::string>()
+                item.at("owner_address").get<std::string>(),
+                item.value("object_owner_device_ids", std::vector<uint64_t>{})
             });
         }
 
