@@ -1,4 +1,5 @@
 #include <pear/db/sqlite_database.hpp>
+#include <stdexcept>
 #include <string_view>
 
 #include "schema.hpp"
@@ -9,6 +10,7 @@ namespace pear::db {
 using pear::net::DeviceUpdateInfo;
 using pear::net::FileDeleteInfo;
 using pear::net::FileUpdateInfo;
+using pear::net::ObjectOwnerUpdateInfo;
 using pear::net::WalEntryInfo;
 using pear::net::WalOpTypeInfo;
 
@@ -37,6 +39,16 @@ void bindWalEntryState(Statement& st, const WalEntryInfo& entry) {
         st.bind_null(5);
         st.bind(6, entry.file_delete.version);
         st.bind(7, entry.file_delete.owner_device_id);
+        st.bind_null(8);
+        st.bind_null(9);
+        return;
+    }
+
+    if (entry.op_type == WalOpTypeInfo::kObjectOwnerUpdate) {
+        st.bind_null(4);
+        st.bind(5, entry.object_owner.object_hash);
+        st.bind_null(6);
+        st.bind(7, entry.object_owner.owner_device_id);
         st.bind_null(8);
         st.bind_null(9);
         return;
@@ -96,6 +108,9 @@ std::vector<WalEntryInfo> SqliteDatabase::getWalEntriesSince(uint64_t last_seq_i
         } else if (entry.op_type == WalOpTypeInfo::kDeviceUpdate) {
             entry.device.device_id = static_cast<uint64_t>(st.col_i64(7));
             entry.device.address = st.col_text(8);
+        } else if (entry.op_type == WalOpTypeInfo::kObjectOwnerUpdate) {
+            entry.object_owner.object_hash = st.col_text(4);
+            entry.object_owner.owner_device_id = static_cast<uint64_t>(st.col_i64(6));
         }
 
         out.push_back(std::move(entry));
@@ -121,6 +136,14 @@ void SqliteDatabase::applyWalEntryToState(const WalEntryInfo& entry) {
         st.bind(3, entry.file.object_hash);
         st.bind(4, entry.file.owner_device_id);
         st.run();
+
+        auto owner_st = conn_->prepare(R"sql(
+            INSERT OR IGNORE INTO object_owners(object_hash, owner_device_id)
+            VALUES(?1, ?2);
+        )sql");
+        owner_st.bind(1, entry.file.object_hash);
+        owner_st.bind(2, entry.file.owner_device_id);
+        owner_st.run();
         return;
     }
 
@@ -139,6 +162,18 @@ void SqliteDatabase::applyWalEntryToState(const WalEntryInfo& entry) {
         st.bind(1, entry.file_delete.path);
         st.bind(2, entry.file_delete.version);
         st.bind(3, entry.file_delete.owner_device_id);
+        st.run();
+        return;
+    }
+
+    if (entry.op_type == WalOpTypeInfo::kObjectOwnerUpdate) {
+        auto st = conn_->prepare(R"sql(
+            INSERT OR IGNORE INTO object_owners(object_hash, owner_device_id)
+            VALUES(?1, ?2);
+        )sql");
+
+        st.bind(1, entry.object_owner.object_hash);
+        st.bind(2, entry.object_owner.owner_device_id);
         st.run();
         return;
     }
@@ -339,6 +374,136 @@ std::vector<FileUpdateInfo> SqliteDatabase::getAllFiles() {
     return out;
 }
 
+size_t SqliteDatabase::countOldFileVersions(size_t keep_versions) {
+    if (keep_versions == 0) {
+        throw std::runtime_error("keep_versions must be >= 1");
+    }
+
+    auto st = conn_->prepare(R"sql(
+        SELECT COUNT(*)
+        FROM (
+            SELECT ROW_NUMBER() OVER (
+                PARTITION BY path
+                ORDER BY version DESC
+            ) AS row_num
+            FROM files
+        )
+        WHERE row_num > ?1;
+    )sql");
+    st.bind(1, static_cast<uint64_t>(keep_versions));
+
+    if (!st.step()) {
+        return 0;
+    }
+
+    return static_cast<size_t>(st.col_i64(0));
+}
+
+size_t SqliteDatabase::cleanupOldFileVersions(size_t keep_versions) {
+    if (keep_versions == 0) {
+        throw std::runtime_error("keep_versions must be >= 1");
+    }
+
+    conn_->begin();
+    try {
+        const size_t deleted_rows = countOldFileVersions(keep_versions);
+
+        auto st = conn_->prepare(R"sql(
+            DELETE FROM files
+            WHERE rowid IN (
+                SELECT rowid
+                FROM (
+                    SELECT rowid,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY path
+                               ORDER BY version DESC
+                           ) AS row_num
+                    FROM files
+                )
+                WHERE row_num > ?1
+            );
+        )sql");
+        st.bind(1, static_cast<uint64_t>(keep_versions));
+        st.run();
+
+        conn_->commit();
+        return deleted_rows;
+    } catch (...) {
+        conn_->rollback();
+        throw;
+    }
+}
+
+std::vector<std::string> SqliteDatabase::getReferencedObjectHashes() {
+    std::vector<std::string> hashes;
+    auto st = conn_->prepare(R"sql(
+        SELECT object_hash
+        FROM (
+            SELECT object_hash
+            FROM files
+            WHERE object_hash IS NOT NULL AND object_hash != ''
+            UNION
+            SELECT object_hash
+            FROM staging_files
+            WHERE object_hash IS NOT NULL AND object_hash != ''
+        )
+        ORDER BY object_hash ASC;
+    )sql");
+
+    while (st.step()) {
+        hashes.push_back(st.col_text(0));
+    }
+
+    return hashes;
+}
+
+size_t SqliteDatabase::cleanupUnreferencedObjectOwners() {
+    auto has_table_st = conn_->prepare(R"sql(
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'object_owners'
+        LIMIT 1;
+    )sql");
+
+    if (!has_table_st.step()) {
+        return 0;
+    }
+
+    conn_->begin();
+    try {
+        auto count_st = conn_->prepare(R"sql(
+            SELECT COUNT(*)
+            FROM object_owners
+            WHERE object_hash NOT IN (
+                SELECT object_hash
+                FROM files
+                WHERE object_hash IS NOT NULL
+            );
+        )sql");
+
+        size_t deleted_rows = 0;
+        if (count_st.step()) {
+            deleted_rows = static_cast<size_t>(count_st.col_i64(0));
+        }
+
+        auto delete_st = conn_->prepare(R"sql(
+            DELETE FROM object_owners
+            WHERE object_hash NOT IN (
+                SELECT object_hash
+                FROM files
+                WHERE object_hash IS NOT NULL
+            );
+        )sql");
+        delete_st.run();
+
+        conn_->commit();
+        return deleted_rows;
+    } catch (...) {
+        conn_->rollback();
+        throw;
+    }
+}
+
 void SqliteDatabase::stageFile(const std::string& path, const std::string& object_hash,
                                const std::string& local_path, const std::string& operation) {
     auto st = conn_->prepare(R"sql(
@@ -426,6 +591,58 @@ std::string SqliteDatabase::getDeviceAddress(uint64_t device_id) {
     }
 
     return st.col_text(0);
+}
+
+
+std::vector<uint64_t> SqliteDatabase::getObjectOwnerDeviceIds(const std::string& object_hash) {
+    std::vector<uint64_t> out;
+    auto st = conn_->prepare(R"sql(
+        SELECT owner_device_id
+        FROM object_owners
+        WHERE object_hash = ?1
+        ORDER BY owner_device_id ASC;
+    )sql");
+
+    st.bind(1, object_hash);
+
+    while (st.step()) {
+        out.push_back(static_cast<uint64_t>(st.col_i64(0)));
+    }
+
+    return out;
+}
+
+std::vector<std::string> SqliteDatabase::getObjectOwnerAddresses(const std::string& object_hash) {
+    std::vector<std::string> out;
+    auto st = conn_->prepare(R"sql(
+        SELECT d.address
+        FROM object_owners o
+        JOIN devices d ON d.device_id = o.owner_device_id
+        WHERE o.object_hash = ?1
+        ORDER BY o.owner_device_id ASC;
+    )sql");
+
+    st.bind(1, object_hash);
+
+    while (st.step()) {
+        out.push_back(st.col_text(0));
+    }
+
+    return out;
+}
+
+bool SqliteDatabase::hasObjectOwner(const std::string& object_hash, uint64_t device_id) {
+    auto st = conn_->prepare(R"sql(
+        SELECT 1
+        FROM object_owners
+        WHERE object_hash = ?1 AND owner_device_id = ?2
+        LIMIT 1;
+    )sql");
+
+    st.bind(1, object_hash);
+    st.bind(2, device_id);
+
+    return st.step();
 }
 
 void SqliteDatabase::setMasterAddress(const std::string& address) {

@@ -46,6 +46,10 @@ class SqliteDatabase {
     uint64_t getLastSeqId();
     uint64_t getNextVersion(const std::string& path);
     std::vector<pear::net::FileUpdateInfo> getAllFiles();
+    size_t countOldFileVersions(size_t keep_versions);
+    size_t cleanupOldFileVersions(size_t keep_versions);
+    std::vector<std::string> getReferencedObjectHashes();
+    size_t cleanupUnreferencedObjectOwners();
 
     void stageFile(const std::string& path, const std::string& object_hash,
                    const std::string& local_path, const std::string& operation = "add");
@@ -55,6 +59,9 @@ class SqliteDatabase {
 
     uint64_t registerDevice(const std::string& address);
     std::string getDeviceAddress(uint64_t device_id);
+    std::vector<uint64_t> getObjectOwnerDeviceIds(const std::string& object_hash);
+    std::vector<std::string> getObjectOwnerAddresses(const std::string& object_hash);
+    bool hasObjectOwner(const std::string& object_hash, uint64_t device_id);
 
     void setMasterAddress(const std::string& address);
     std::string getMasterAddress();

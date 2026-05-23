@@ -20,13 +20,15 @@ json staged_file_to_json(const pear::db::StagedFileInfo& file) {
 
 json file_to_json(const pear::net::FileUpdateInfo& file, pear::db::SqliteDatabase& database) {
     const std::string owner_address = database.getDeviceAddress(file.owner_device_id);
+    const std::vector<uint64_t> object_owner_device_ids = database.getObjectOwnerDeviceIds(file.object_hash);
 
     return {
         {"path", file.path},
         {"object_hash", file.object_hash},
         {"version", file.version},
         {"owner_device_id", file.owner_device_id},
-        {"owner_address", owner_address}
+        {"owner_address", owner_address},
+        {"object_owner_device_ids", object_owner_device_ids}
     };
 }
 

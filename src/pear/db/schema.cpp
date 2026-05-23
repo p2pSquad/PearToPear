@@ -37,6 +37,12 @@ CREATE TABLE IF NOT EXISTS files(
 
 CREATE INDEX IF NOT EXISTS files_by_path ON files(path);
 
+CREATE TABLE IF NOT EXISTS object_owners(
+    object_hash TEXT NOT NULL,
+    owner_device_id INTEGER NOT NULL,
+    PRIMARY KEY(object_hash, owner_device_id)
+);
+
 CREATE TABLE IF NOT EXISTS wal(
     seq_id INTEGER PRIMARY KEY,
     timestamp INTEGER NOT NULL,
@@ -70,6 +76,12 @@ void ensure_schema(Connection& c) {
     c.begin();
     try {
         c.exec(kSchemaSql);
+        c.exec(R"sql(
+            INSERT OR IGNORE INTO object_owners(object_hash, owner_device_id)
+            SELECT object_hash, owner_device_id
+            FROM files
+            WHERE object_hash IS NOT NULL;
+        )sql");
         c.commit();
     } catch (...) {
         c.rollback();
