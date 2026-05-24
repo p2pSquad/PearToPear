@@ -610,4 +610,57 @@ void run_status(bool json_format) {
     }
 }
 
+void run_cleanup(size_t keep_versions, bool dry_run) {
+    if (keep_versions == 0) {
+        throw std::runtime_error("keep_versions must be >= 1");
+    }
+
+    pear::storage::Workspace workspace = pear::storage::Workspace::discover(".");
+    pear::db::SqliteDatabase database(get_database_path(workspace));
+
+    const size_t old_versions_to_delete = database.countOldFileVersions(keep_versions);
+    const auto object_ids = workspace.get_list_object_ids();
+    const auto referenced_hashes = database.getReferencedObjectHashes();
+
+    std::unordered_set<std::string> referenced_set(referenced_hashes.begin(), referenced_hashes.end());
+    std::vector<std::string> object_ids_to_delete;
+
+    for (const auto& object_id : object_ids) {
+        if (!referenced_set.contains(object_id)) {
+            object_ids_to_delete.push_back(object_id);
+        }
+    }
+
+    std::sort(object_ids_to_delete.begin(), object_ids_to_delete.end());
+
+    if (dry_run) {
+        std::cout << Grusha << "dry-run cleanup:\n";
+        std::cout << Grusha << "db old versions to delete: " << old_versions_to_delete << '\n';
+        std::cout << Grusha << "object files to delete: " << object_ids_to_delete.size() << '\n';
+        for (const auto& object_id : object_ids_to_delete) {
+            std::cout << Grusha << "would delete object " << object_id << '\n';
+        }
+        log_info(workspace.get_root(), "cleanup", "dry-run cleanup complete");
+        return;
+    }
+
+    const size_t deleted_versions = database.cleanupOldFileVersions(keep_versions);
+    database.cleanupUnreferencedObjectOwners();
+
+    const auto hashes_after_cleanup = database.getReferencedObjectHashes();
+    std::unordered_set<std::string> referenced_after_cleanup(hashes_after_cleanup.begin(), hashes_after_cleanup.end());
+
+    size_t deleted_object_files = 0;
+    for (const auto& object_id : workspace.get_list_object_ids()) {
+        if (!referenced_after_cleanup.contains(object_id)) {
+            workspace.delete_objectfile(object_id);
+            ++deleted_object_files;
+        }
+    }
+
+    std::cout << Grusha << "cleanup complete: deleted " << deleted_versions
+              << " old db versions, deleted " << deleted_object_files << " object files\n";
+    log_info(workspace.get_root(), "cleanup", "cleanup complete");
+}
+
 } // namespace pear::cli

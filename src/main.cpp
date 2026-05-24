@@ -65,6 +65,12 @@ int main(int argc, char** argv) {
     CLI::App* log = app.add_subcommand("log", "Show pear operation log");
     log->add_option("--tail", log_tail, "Show last N log lines");
 
+    size_t cleanup_keep_versions = 1;
+    bool cleanup_dry_run = false;
+    CLI::App* cleanup = app.add_subcommand("cleanup", "Cleanup old file versions and unreferenced object files");
+    cleanup->add_option("--keep-versions", cleanup_keep_versions, "Keep last N versions per file path");
+    cleanup->add_flag("--dry-run", cleanup_dry_run, "Show cleanup plan without deleting anything");
+
     init->callback([&]() { pear::cli::run_init(workspace_path); });
     deinit->callback([&]() { pear::cli::run_deinit(); });
     connect->callback([&]() {
@@ -92,6 +98,7 @@ int main(int argc, char** argv) {
     pull->callback([&](){pear::cli::run_pull(targets); });
     status->callback([&](){pear::cli::run_status(json_status); });
     log->callback([&](){pear::cli::run_log(log_tail); });
+    cleanup->callback([&](){pear::cli::run_cleanup(cleanup_keep_versions, cleanup_dry_run); });
 
     try {
         app.require_subcommand(1);

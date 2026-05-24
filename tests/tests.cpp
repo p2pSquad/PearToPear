@@ -171,6 +171,80 @@ TEST(net, pull_file) {
 
 #endif // PEAR_TEST_NET_PULL
 
+#ifdef PEAR_TEST_CLEANUP
+
+TEST(cleanup, removes_old_versions_and_objects) {
+    Repo main;
+    Repo peer;
+
+    const std::string main_address = local_address();
+    const std::string peer_address = local_address();
+
+    EXPECT_EQ(main.init().code, 0);
+    EXPECT_EQ(peer.init().code, 0);
+
+    EXPECT_EQ(main.connect_main(main_address).code, 0);
+    wait_network();
+
+    EXPECT_EQ(peer.connect(main_address, peer_address).code, 0);
+    wait_network();
+
+    main.write_file("a.txt", "version A\n");
+    EXPECT_EQ(main.add({"a.txt"}).code, 0);
+    EXPECT_EQ(main.push().code, 0);
+
+    main.write_file("a.txt", "version B\n");
+    EXPECT_EQ(main.add({"a.txt"}).code, 0);
+    EXPECT_EQ(main.push().code, 0);
+
+    const auto objects_before = main.object_ids();
+    ASSERT_GE(objects_before.size(), 2u);
+
+    EXPECT_EQ(main.cleanup(1, false).code, 0);
+
+    const auto objects_after = main.object_ids();
+    EXPECT_LT(objects_after.size(), objects_before.size());
+
+    EXPECT_EQ(main.update().code, 0);
+    const Ls main_ls = main.ls();
+    ASSERT_EQ(main_ls.files.size(), 1u);
+    EXPECT_EQ(main_ls.files[0].path, "a.txt");
+    EXPECT_EQ(main_ls.files[0].version, 2u);
+
+    EXPECT_EQ(peer.update().code, 0);
+    EXPECT_EQ(peer.pull({"a.txt"}).code, 0);
+    EXPECT_EQ(peer.read_file("a.txt"), "version B\n");
+
+    EXPECT_EQ(peer.disconnect().code, 0);
+    EXPECT_EQ(main.disconnect().code, 0);
+}
+
+#endif // PEAR_TEST_CLEANUP
+
+#ifdef PEAR_TEST_CLEANUP_DRY_RUN
+
+TEST(cleanup, dry_run_does_not_change_objects) {
+    Repo repo;
+
+    EXPECT_EQ(repo.init().code, 0);
+
+    repo.write_file("a.txt", "one\n");
+    EXPECT_EQ(repo.add({"a.txt"}).code, 0);
+    repo.write_file("a.txt", "two\n");
+    EXPECT_EQ(repo.add({"a.txt"}).code, 0);
+
+    const auto objects_before = repo.object_ids();
+    const size_t object_count_before = objects_before.size();
+
+    const CommandResult cleanup_result = repo.cleanup(1, true);
+    EXPECT_EQ(cleanup_result.code, 0) << cleanup_result.out << cleanup_result.err;
+
+    const auto objects_after = repo.object_ids();
+    EXPECT_EQ(objects_after.size(), object_count_before);
+}
+
+#endif // PEAR_TEST_CLEANUP_DRY_RUN
+
 } // namespace pear::tests
 
 int main(int argc, char** argv) {
