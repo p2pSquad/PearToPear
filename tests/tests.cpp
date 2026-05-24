@@ -116,7 +116,10 @@ TEST(net, update_metadata) {
 
     EXPECT_EQ(peer.update().code, 0);
 
-    EXPECT_EQ(file_paths(peer.ls()), (std::vector<std::string>{"a.txt"}));
+    const Ls peer_ls = peer.ls();
+    EXPECT_EQ(file_paths(peer_ls), (std::vector<std::string>{"a.txt"}));
+    ASSERT_EQ(peer_ls.files.size(), 1u);
+    EXPECT_FALSE(peer_ls.files[0].object_owner_device_ids.empty());
     EXPECT_TRUE(peer.exists("a.txt.empty"));
     EXPECT_EQ(peer.status().missing, std::vector<std::string>{});
 

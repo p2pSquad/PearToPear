@@ -9,6 +9,7 @@ namespace pear::db {
 using pear::net::DeviceUpdateInfo;
 using pear::net::FileDeleteInfo;
 using pear::net::FileUpdateInfo;
+using pear::net::ObjectOwnerUpdateInfo;
 using pear::net::WalEntryInfo;
 using pear::net::WalOpTypeInfo;
 
@@ -37,6 +38,16 @@ void bindWalEntryState(Statement& st, const WalEntryInfo& entry) {
         st.bind_null(5);
         st.bind(6, entry.file_delete.version);
         st.bind(7, entry.file_delete.owner_device_id);
+        st.bind_null(8);
+        st.bind_null(9);
+        return;
+    }
+
+    if (entry.op_type == WalOpTypeInfo::kObjectOwnerUpdate) {
+        st.bind_null(4);
+        st.bind(5, entry.object_owner.object_hash);
+        st.bind_null(6);
+        st.bind(7, entry.object_owner.owner_device_id);
         st.bind_null(8);
         st.bind_null(9);
         return;
@@ -96,6 +107,9 @@ std::vector<WalEntryInfo> SqliteDatabase::getWalEntriesSince(uint64_t last_seq_i
         } else if (entry.op_type == WalOpTypeInfo::kDeviceUpdate) {
             entry.device.device_id = static_cast<uint64_t>(st.col_i64(7));
             entry.device.address = st.col_text(8);
+        } else if (entry.op_type == WalOpTypeInfo::kObjectOwnerUpdate) {
+            entry.object_owner.object_hash = st.col_text(4);
+            entry.object_owner.owner_device_id = static_cast<uint64_t>(st.col_i64(6));
         }
 
         out.push_back(std::move(entry));
@@ -121,6 +135,14 @@ void SqliteDatabase::applyWalEntryToState(const WalEntryInfo& entry) {
         st.bind(3, entry.file.object_hash);
         st.bind(4, entry.file.owner_device_id);
         st.run();
+
+        auto owner_st = conn_->prepare(R"sql(
+            INSERT OR IGNORE INTO object_owners(object_hash, owner_device_id)
+            VALUES(?1, ?2);
+        )sql");
+        owner_st.bind(1, entry.file.object_hash);
+        owner_st.bind(2, entry.file.owner_device_id);
+        owner_st.run();
         return;
     }
 
@@ -139,6 +161,18 @@ void SqliteDatabase::applyWalEntryToState(const WalEntryInfo& entry) {
         st.bind(1, entry.file_delete.path);
         st.bind(2, entry.file_delete.version);
         st.bind(3, entry.file_delete.owner_device_id);
+        st.run();
+        return;
+    }
+
+    if (entry.op_type == WalOpTypeInfo::kObjectOwnerUpdate) {
+        auto st = conn_->prepare(R"sql(
+            INSERT OR IGNORE INTO object_owners(object_hash, owner_device_id)
+            VALUES(?1, ?2);
+        )sql");
+
+        st.bind(1, entry.object_owner.object_hash);
+        st.bind(2, entry.object_owner.owner_device_id);
         st.run();
         return;
     }
@@ -426,6 +460,58 @@ std::string SqliteDatabase::getDeviceAddress(uint64_t device_id) {
     }
 
     return st.col_text(0);
+}
+
+
+std::vector<uint64_t> SqliteDatabase::getObjectOwnerDeviceIds(const std::string& object_hash) {
+    std::vector<uint64_t> out;
+    auto st = conn_->prepare(R"sql(
+        SELECT owner_device_id
+        FROM object_owners
+        WHERE object_hash = ?1
+        ORDER BY owner_device_id ASC;
+    )sql");
+
+    st.bind(1, object_hash);
+
+    while (st.step()) {
+        out.push_back(static_cast<uint64_t>(st.col_i64(0)));
+    }
+
+    return out;
+}
+
+std::vector<std::string> SqliteDatabase::getObjectOwnerAddresses(const std::string& object_hash) {
+    std::vector<std::string> out;
+    auto st = conn_->prepare(R"sql(
+        SELECT d.address
+        FROM object_owners o
+        JOIN devices d ON d.device_id = o.owner_device_id
+        WHERE o.object_hash = ?1
+        ORDER BY o.owner_device_id ASC;
+    )sql");
+
+    st.bind(1, object_hash);
+
+    while (st.step()) {
+        out.push_back(st.col_text(0));
+    }
+
+    return out;
+}
+
+bool SqliteDatabase::hasObjectOwner(const std::string& object_hash, uint64_t device_id) {
+    auto st = conn_->prepare(R"sql(
+        SELECT 1
+        FROM object_owners
+        WHERE object_hash = ?1 AND owner_device_id = ?2
+        LIMIT 1;
+    )sql");
+
+    st.bind(1, object_hash);
+    st.bind(2, device_id);
+
+    return st.step();
 }
 
 void SqliteDatabase::setMasterAddress(const std::string& address) {
