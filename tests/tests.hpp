@@ -185,6 +185,14 @@ public:
         return run(root_, args);
     }
 
+    CommandResult log() const {
+        return run(root_, {"log"});
+    }
+
+    CommandResult log_tail(size_t line_count) const {
+        return run(root_, {"log", "--tail", std::to_string(line_count)});
+    }
+
     Status status() const {
         const CommandResult result = run(root_, {"status", "--json"});
         EXPECT_EQ(result.code, 0) << result.out << result.err;
@@ -258,24 +266,6 @@ public:
 
     bool exists(const fs::path& path) const {
         return fs::exists(root_ / path);
-    }
-
-    size_t object_count() const {
-        const fs::path object_directory = root_ / ".peer" / "obj";
-
-        if (!fs::exists(object_directory)) {
-            return 0;
-        }
-
-        size_t count = 0;
-
-        for (const auto& entry : fs::recursive_directory_iterator(object_directory)) {
-            if (entry.is_regular_file()) {
-                ++count;
-            }
-        }
-
-        return count;
     }
 
     const fs::path& root() const {
