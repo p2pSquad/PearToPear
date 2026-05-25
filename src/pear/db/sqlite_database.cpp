@@ -1,4 +1,5 @@
 #include <pear/db/sqlite_database.hpp>
+#include <stdexcept>
 #include <string_view>
 
 #include "schema.hpp"
@@ -371,6 +372,136 @@ std::vector<FileUpdateInfo> SqliteDatabase::getAllFiles() {
         out.push_back(std::move(info));
     }
     return out;
+}
+
+size_t SqliteDatabase::countOldFileVersions(size_t keep_versions) {
+    if (keep_versions == 0) {
+        throw std::runtime_error("keep_versions must be >= 1");
+    }
+
+    auto st = conn_->prepare(R"sql(
+        SELECT COUNT(*)
+        FROM (
+            SELECT ROW_NUMBER() OVER (
+                PARTITION BY path
+                ORDER BY version DESC
+            ) AS row_num
+            FROM files
+        )
+        WHERE row_num > ?1;
+    )sql");
+    st.bind(1, static_cast<uint64_t>(keep_versions));
+
+    if (!st.step()) {
+        return 0;
+    }
+
+    return static_cast<size_t>(st.col_i64(0));
+}
+
+size_t SqliteDatabase::cleanupOldFileVersions(size_t keep_versions) {
+    if (keep_versions == 0) {
+        throw std::runtime_error("keep_versions must be >= 1");
+    }
+
+    conn_->begin();
+    try {
+        const size_t deleted_rows = countOldFileVersions(keep_versions);
+
+        auto st = conn_->prepare(R"sql(
+            DELETE FROM files
+            WHERE rowid IN (
+                SELECT rowid
+                FROM (
+                    SELECT rowid,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY path
+                               ORDER BY version DESC
+                           ) AS row_num
+                    FROM files
+                )
+                WHERE row_num > ?1
+            );
+        )sql");
+        st.bind(1, static_cast<uint64_t>(keep_versions));
+        st.run();
+
+        conn_->commit();
+        return deleted_rows;
+    } catch (...) {
+        conn_->rollback();
+        throw;
+    }
+}
+
+std::vector<std::string> SqliteDatabase::getReferencedObjectHashes() {
+    std::vector<std::string> hashes;
+    auto st = conn_->prepare(R"sql(
+        SELECT object_hash
+        FROM (
+            SELECT object_hash
+            FROM files
+            WHERE object_hash IS NOT NULL AND object_hash != ''
+            UNION
+            SELECT object_hash
+            FROM staging_files
+            WHERE object_hash IS NOT NULL AND object_hash != ''
+        )
+        ORDER BY object_hash ASC;
+    )sql");
+
+    while (st.step()) {
+        hashes.push_back(st.col_text(0));
+    }
+
+    return hashes;
+}
+
+size_t SqliteDatabase::cleanupUnreferencedObjectOwners() {
+    auto has_table_st = conn_->prepare(R"sql(
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'object_owners'
+        LIMIT 1;
+    )sql");
+
+    if (!has_table_st.step()) {
+        return 0;
+    }
+
+    conn_->begin();
+    try {
+        auto count_st = conn_->prepare(R"sql(
+            SELECT COUNT(*)
+            FROM object_owners
+            WHERE object_hash NOT IN (
+                SELECT object_hash
+                FROM files
+                WHERE object_hash IS NOT NULL
+            );
+        )sql");
+
+        size_t deleted_rows = 0;
+        if (count_st.step()) {
+            deleted_rows = static_cast<size_t>(count_st.col_i64(0));
+        }
+
+        auto delete_st = conn_->prepare(R"sql(
+            DELETE FROM object_owners
+            WHERE object_hash NOT IN (
+                SELECT object_hash
+                FROM files
+                WHERE object_hash IS NOT NULL
+            );
+        )sql");
+        delete_st.run();
+
+        conn_->commit();
+        return deleted_rows;
+    } catch (...) {
+        conn_->rollback();
+        throw;
+    }
 }
 
 void SqliteDatabase::stageFile(const std::string& path, const std::string& object_hash,

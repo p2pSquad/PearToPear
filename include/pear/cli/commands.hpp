@@ -23,6 +23,7 @@ void run_push();
 void run_pull(const std::vector<std::string>& targets);
 void run_status(bool json_format);
 void run_log(size_t tail);
+void run_cleanup(size_t keep_versions, bool dry_run);
 
 } // namespace pear::cli
 

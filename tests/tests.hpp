@@ -194,6 +194,31 @@ public:
         return run(root_, {"log", "--tail", std::to_string(line_count)});
     }
 
+    CommandResult cleanup(size_t keep_versions, bool dry_run = false) const {
+        std::vector<std::string> args = {"cleanup", "--keep-versions", std::to_string(keep_versions)};
+        if (dry_run) {
+            args.push_back("--dry-run");
+        }
+        return run(root_, args);
+    }
+
+    std::vector<std::string> object_ids() const {
+        std::vector<std::string> result;
+        const fs::path obj_dir = root_ / ".peer" / "obj";
+
+        if (!fs::exists(obj_dir)) {
+            return result;
+        }
+
+        for (const auto& entry : fs::directory_iterator(obj_dir)) {
+            if (entry.is_regular_file()) {
+                result.push_back(entry.path().filename().string());
+            }
+        }
+
+        return result;
+    }
+
     Status status() const {
         const CommandResult result = run(root_, {"status", "--json"});
         EXPECT_EQ(result.code, 0) << result.out << result.err;
@@ -268,6 +293,24 @@ public:
 
     bool exists(const fs::path& path) const {
         return fs::exists(root_ / path);
+    }
+
+    size_t object_count() const {
+        const fs::path object_directory = root_ / ".peer" / "obj";
+
+        if (!fs::exists(object_directory)) {
+            return 0;
+        }
+
+        size_t count = 0;
+
+        for (const auto& entry : fs::recursive_directory_iterator(object_directory)) {
+            if (entry.is_regular_file()) {
+                ++count;
+            }
+        }
+
+        return count;
     }
 
     const fs::path& root() const {
