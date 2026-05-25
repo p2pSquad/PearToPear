@@ -47,7 +47,6 @@ struct FileEntry {
     uint64_t version = 0;
     uint64_t owner_device_id = 0;
     std::string owner_address;
-    std::vector<uint64_t> object_owner_device_ids;
 };
 
 struct Ls {
@@ -267,8 +266,7 @@ public:
                 item.at("object_hash").get<std::string>(),
                 item.at("version").get<uint64_t>(),
                 item.at("owner_device_id").get<uint64_t>(),
-                item.at("owner_address").get<std::string>(),
-                item.value("object_owner_device_ids", std::vector<uint64_t>{})
+                item.at("owner_address").get<std::string>()
             });
         }
 
@@ -293,6 +291,24 @@ public:
 
     bool exists(const fs::path& path) const {
         return fs::exists(root_ / path);
+    }
+
+    size_t object_count() const {
+        const fs::path object_directory = root_ / ".peer" / "obj";
+
+        if (!fs::exists(object_directory)) {
+            return 0;
+        }
+
+        size_t count = 0;
+
+        for (const auto& entry : fs::recursive_directory_iterator(object_directory)) {
+            if (entry.is_regular_file()) {
+                ++count;
+            }
+        }
+
+        return count;
     }
 
     const fs::path& root() const {
